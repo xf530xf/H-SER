@@ -524,7 +524,7 @@ def add_pos_embed(x, pos_embed):
     ##########################################
 # 覆盖 SoftShapeNet：把超图参数传入每个 block
 # =========================================================
-class SoftShapeNet(nn.Module):
+class H-SER(nn.Module):
     def __init__(self, seq_len, shape_size, num_channels, emb_dim, sparse_rate, depth, num_classes,
                  num_experts=8, stride=2,
                  hg_k=8, hg_metric="cosine", hg_edge_drop=0.0, hg_weight=1.0):
