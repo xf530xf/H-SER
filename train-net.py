@@ -28,7 +28,7 @@ from ts_utils import set_seed, build_loss, save_cls_result, build_dataset, get_a
 from data.preprocessing import normalize_per_series, fill_nan_value, normalize_train_val_test
 from data.dataloader import UCRDataset
 from data.shape_size_hyp import ucr_hyp_dict_shape_size
-from models.SoftShapeModel import SoftShapeNet
+from models.H-SER import H-SER
 
 import matplotlib.pyplot as plt
 
