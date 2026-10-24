@@ -1,7 +1,7 @@
 # compute_params_flops.py
 # ------------------------------------------------------------
 # Compute parameter count (Params, M) and FLOPs (M / G) for the
-# local SoftShapeNet model on a few representative UCR datasets.
+# local H2SERNet model on a few representative UCR datasets.
 #
 # - Uses fvcore.nn.FlopCountAnalysis for FLOPs.
 # - Uses model.parameters() for trainable param count.
@@ -25,7 +25,7 @@ curPath = os.path.abspath(os.path.dirname(__file__))
 rootPath = os.path.split(curPath)[0]
 sys.path.append(rootPath)
 
-from models.SoftShapeModel import SoftShapeNet
+from models.H2SERModel import H2SERNet
 from data.shape_size_hyp import ucr_hyp_dict_shape_size
 
 
@@ -79,7 +79,7 @@ def _resolve_shape_size(dataset_name: str, seq_len: int, default_stride: int = 4
 
 def _build_model(seq_len: int, shape_size: int, stride: int, num_class: int,
                  emb_dim: int = 128, depth: int = 2, sparse_rate: float = 0.5):
-    return SoftShapeNet(
+    return H2SERNet(
         seq_len=seq_len,
         shape_size=shape_size,
         num_channels=1,
@@ -194,7 +194,7 @@ def main():
     # Summary table
     # ------------------------------------------------------------
     print("=" * 78)
-    print("Summary (SoftShapeNet, single-sample forward)")
+    print("Summary (H2SERNet, single-sample forward)")
     print("=" * 78)
     print(f"{'Dataset':<16}{'seq_len':>9}{'#class':>8}{'shape':>7}"
           f"{'Params (M)':>14}{'FLOPs (M)':>14}")
@@ -208,14 +208,16 @@ def main():
     print()
     print("Caveat: fvcore counts conv / linear / matmul / einsum FLOPs, but not")
     print("the dynamic top-k / gather / scatter / softmax / index_add ops used")
-    print("by SparseDispatcher in MoE_Block. Those are sparse and typically")
-    print("contribute <5% of total compute at the configurations used here.")
+    print("by SparseDispatcher in MoE_Block. These operations")
+    print("are omitted; this is a partial operation count, not a full runtime estimate.")
 
     # ------------------------------------------------------------
     # Persist a markdown table snippet for the report.
     # ------------------------------------------------------------
-    with open(args.report.replace(".md", "_local.md"), "w") as f:
-        f.write("# SoftShapeNet — locally measured Params / FLOPs\n\n")
+    report_path = os.path.splitext(args.report)[0] + "_local.md"
+    os.makedirs(os.path.dirname(os.path.abspath(report_path)), exist_ok=True)
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write("# H2SERNet — locally measured Params / FLOPs\n\n")
         f.write(f"Settings: emb_dim={args.emb_dim}, depth={args.depth}, "
                 f"sparse_rate={args.sparse_rate}, batch=1, "
                 f"device={device}\n\n")
@@ -228,7 +230,7 @@ def main():
             f.write(f"| {r['dataset']} | {r['seq_len']} | {r['num_class']} | "
                     f"{r['shape_size']} | {params_m:.3f} | {flops_m:.2f} |\n")
     print(f"\n[Info] Local-only report written to: "
-          f"{args.report.replace('.md', '_local.md')}")
+          f"{report_path}")
 
 
 if __name__ == "__main__":
