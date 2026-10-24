@@ -1,10 +1,10 @@
-# train_softshape_with_vis_all.py
+# train_h2ser_with_vis_all.py
 # ------------------------------------------------------------
 # Full training script (5-fold) + 2x2 embedding visualization (t-SNE)
 # + Embedding featuremap visualization (token-token / token-channel heatmaps)
 #
 # Requires: your existing project modules (ts_utils, data/*, models/*)
-# Model requirement: SoftShapeNet.forward(..., return_intermediates=True)
+# Model requirement: H2SERNet.forward(..., return_intermediates=True)
 # should return a dict emb with keys: input/intra/inter/output
 #   input/intra/inter: [B, N, C]
 #   output: [B, C] or [B, 1, C]
@@ -14,6 +14,7 @@ import os
 import sys
 import time
 import argparse
+from copy import deepcopy
 
 import numpy as np
 import torch
@@ -28,7 +29,7 @@ from ts_utils import set_seed, build_loss, save_cls_result, build_dataset, get_a
 from data.preprocessing import normalize_per_series, fill_nan_value, normalize_train_val_test
 from data.dataloader import UCRDataset
 from data.shape_size_hyp import ucr_hyp_dict_shape_size
-from models.H-SER import H-SER
+from models.H2SERModel import H2SERNet
 
 import matplotlib.pyplot as plt
 
@@ -41,7 +42,7 @@ except Exception:
 # -------------------------
 # Matplotlib global style
 # -------------------------
-plt.rcParams['font.family'] = 'Times New Roman'
+plt.rcParams['font.family'] = ['Times New Roman', 'DejaVu Serif']
 plt.rcParams['font.size'] = 12
 plt.rcParams['font.weight'] = 'bold'
 plt.rcParams['axes.labelweight'] = 'bold'
@@ -58,7 +59,7 @@ def _to_2d(X: np.ndarray, seed: int = 42) -> np.ndarray:
     X: [M, D]
     return: [M, 2]
     """
-    if _HAS_TSNE and X.shape[0] >= 10:
+    if _HAS_TSNE and X.shape[0] >= 10 and X.shape[1] >= 2:
         perplexity = min(30, max(5, (X.shape[0] - 1) // 3))
         tsne = TSNE(
             n_components=2,
@@ -72,7 +73,8 @@ def _to_2d(X: np.ndarray, seed: int = 42) -> np.ndarray:
     # PCA fallback via SVD
     Xc = X - X.mean(axis=0, keepdims=True)
     U, S, Vt = np.linalg.svd(Xc, full_matrices=False)
-    return (U[:, :2] * S[:2])
+    coordinates = U[:, :2] * S[:2]
+    return np.pad(coordinates, ((0, 0), (0, 2 - coordinates.shape[1])))
 
 
 @torch.no_grad()
@@ -317,7 +319,7 @@ def main():
 
     # Dataset setup
     parser.add_argument('--dataset', type=str, default='BME', help='dataset(in ucr)')
-    parser.add_argument('--dataroot', type=str, default='/data/fengxiao2/SoftShape/datasets/UCRArchive_2018',
+    parser.add_argument('--dataroot', type=str, default=os.path.join(curPath, 'datasets', 'UCRArchive_2018'),
                         help='path of UCR folder')
     parser.add_argument('--num_class', type=int, default=2, help='number of class (will be overwritten by build_dataset)')
     parser.add_argument('--normalize_way', type=str, default='single', help='single or train_set')
@@ -336,7 +338,7 @@ def main():
     parser.add_argument('--moeloss_rate', type=float, default=0.001, help='0.01 or 0.001')
 
     # Training setup
-    parser.add_argument('--loss', type=str, default='cross_entropy', help='loss function')
+    parser.add_argument('--loss', type=str, choices=['cross_entropy'], default='cross_entropy', help='loss function')
     parser.add_argument('--optimizer', type=str, default='adam', help='optimizer')
     parser.add_argument('--lr', type=float, default=0.001, help='learning rate')
     parser.add_argument('--weight_decay', type=float, default=0.0, help='weight decay')
@@ -346,8 +348,8 @@ def main():
     parser.add_argument('--cuda', type=str, default='cuda:0')
 
     # Result setup
-    parser.add_argument('--save_dir', type=str, default='/data/fengxiao2/SoftShape/results')
-    parser.add_argument('--save_csv_name', type=str, default='softshape_five_fold_split')
+    parser.add_argument('--save_dir', type=str, default=os.path.join(curPath, 'results'))
+    parser.add_argument('--save_csv_name', type=str, default='h2ser_five_fold_split')
 
     # Embedding scatter visualization setup
     parser.add_argument('--vis_embeddings', type=int, default=1, help='1: save 2x2 embedding visualization (t-SNE)')
@@ -364,6 +366,8 @@ def main():
     parser.add_argument('--vis_feature_max_tokens', type=int, default=256, help='max tokens shown in token-token maps')
 
     args = parser.parse_args()
+    if args.batch_size < 1 or args.epoch < 1 or args.shape_stride < 1 or args.vis_max_points < 1:
+        parser.error('batch_size, epoch, shape_stride, and vis_max_points must be positive')
     args.vis_feature_epochs = [int(x) for x in args.vis_feature_epochs.split(",") if x.strip() != ""]
 
     device = torch.device(args.cuda if torch.cuda.is_available() else "cpu")
@@ -375,17 +379,16 @@ def main():
     args.num_class = num_class
     args.moe_num_experts = num_class
     args.seq_len = sum_dataset.shape[1]
-    args.batch_size = int(min(sum_dataset.shape[0] * 0.6 / 10, 16))
 
     # Hyp override for shape params
-    args.shape_size = ucr_hyp_dict_shape_size[args.dataset]['shape_size']
-    args.shape_use_ratio = ucr_hyp_dict_shape_size[args.dataset]['shape_use_ratio']
-    args.shape_ratio = ucr_hyp_dict_shape_size[args.dataset]['shape_ratio']
+    args.shape_size = ucr_hyp_dict_shape_size.get(args.dataset, {}).get('shape_size', args.shape_size)
+    args.shape_use_ratio = ucr_hyp_dict_shape_size.get(args.dataset, {}).get('shape_use_ratio', args.shape_use_ratio)
+    args.shape_ratio = ucr_hyp_dict_shape_size.get(args.dataset, {}).get('shape_ratio', args.shape_ratio)
 
     print("Training dataset = ", args.dataset, ", shape_size = ", args.shape_size)
 
     if args.shape_use_ratio == 1:
-        args.shape_size = int(args.seq_len * args.shape_ratio)
+        args.shape_size = max(1, int(args.seq_len * args.shape_ratio))
         if args.shape_size <= args.shape_stride:
             args.shape_stride = min(2, args.shape_size)
 
@@ -406,7 +409,7 @@ def main():
     loss_fn = build_loss(args).to(device)
 
     # Model
-    model = SoftShapeNet(
+    model = H2SERNet(
         seq_len=args.seq_len,
         shape_size=args.shape_size,
         num_channels=1,
@@ -418,7 +421,7 @@ def main():
         stride=args.shape_stride,
     ).to(device)
 
-    model_init_state = model.state_dict()
+    model_init_state = deepcopy(model.state_dict())
 
     # Optimizer
     if args.optimizer == 'adam':
@@ -429,12 +432,16 @@ def main():
     else:
         raise ValueError(f"Unknown optimizer: {args.optimizer}")
 
+    optimizer_init_state = deepcopy(optimizer.state_dict())
+
     test_accuracies = []
     train_time = 0.0
 
     for i, train_dataset in enumerate(train_datasets):
         t0 = time.time()
         model.load_state_dict(model_init_state)
+        optimizer.load_state_dict(deepcopy(optimizer_init_state))
+        best_model_state = None
 
         print(f'{i} fold start training and evaluate')
 
@@ -508,11 +515,12 @@ def main():
             epoch_train_loss = epoch_train_loss / max(1, num_iterations)
 
             model.eval()
-            val_loss, val_accu = evaluate_model(val_loader, model, loss_fn)
+            val_loss, val_accu = evaluate_model(val_loader, model, loss_fn, num_epoch_i=epoch, warm_up_epoch=args.warm_up_epoch)
 
             if min_val_loss > val_loss:
                 min_val_loss = val_loss
-                test_loss, test_accuracy = evaluate_model(test_loader, model, loss_fn)
+                best_model_state = deepcopy(model.state_dict())
+                test_loss, test_accuracy = evaluate_model(test_loader, model, loss_fn, num_epoch_i=epoch, warm_up_epoch=args.warm_up_epoch)
 
             if (epoch > args.warm_up_epoch) and (abs(last_loss - val_loss) <= 1e-4):
                 stop_count += 1
@@ -561,6 +569,9 @@ def main():
                 except Exception as e:
                     print(f"[VIS-FM] failed at fold={i}, epoch={epoch}: {repr(e)}")
 
+        if best_model_state is None:
+            raise RuntimeError("No finite validation loss was observed; check the input data")
+        model.load_state_dict(best_model_state)
         test_accuracies.append(test_accuracy)
         fold_time = time.time() - t0
         train_time += fold_time
